@@ -17,6 +17,7 @@ async function api(method,body){
 async function sync(){
   if(!localStorage.getItem(cloudKey)||running||conflict)return;
   running=true;
+  $('refreshCloud').disabled=true;
   statusText('Sincronizando…');
   try{
     const remote=await api('GET');
@@ -36,11 +37,11 @@ async function sync(){
     }else if(!equal)setLocal(remote.rows);
     const saved=JSON.stringify(localChanged?local:remote.rows);
     localStorage.setItem(checkpoint,saved);
-    statusText('Salvo neste navegador e na nuvem privada.');
+    statusText('Sincronizado às '+new Date().toLocaleTimeString('pt-BR')+' · Dados salvos na nuvem privada.');
     if(JSON.stringify(read())!==saved)setTimeout(sync,0);
   }catch(e){
     statusText(e.status===401?'Chave inválida. Abra Acesso pessoal e confira a chave.':'Cópia local preservada. A sincronização será tentada novamente.');
-  }finally{running=false}
+  }finally{running=false;$('refreshCloud').disabled=false}
 }
 $('access').onclick=()=>$('accessDialog').showModal();
 $('accessForm').onsubmit=e=>{
@@ -54,16 +55,28 @@ async function resolveConflict(useLocal){
   try{
     const rows=useLocal?read():conflict.rows;
     if(useLocal)await api('PUT',{rows,revision:conflict.revision});
-    else setLocal(rows);
-    localStorage.setItem(checkpoint,JSON.stringify(rows));
+    else{
+      const latest=await api('GET');
+      if(!valid(latest.rows))throw Error();
+      setLocal(latest.rows);
+      localStorage.setItem(checkpoint,JSON.stringify(latest.rows));
+    }
+    if(useLocal)localStorage.setItem(checkpoint,JSON.stringify(rows));
     conflict=null;$('resolve').hidden=true;$('conflicts').close();
   }catch{conflict=null;$('conflicts').close();$('resolve').hidden=true}
   finally{running=false;sync()}
 }
 $('useLocal').onclick=()=>resolveConflict(true);
 $('useRemote').onclick=()=>resolveConflict(false);
+$('refreshCloud').onclick=()=>{
+  if(!localStorage.getItem(cloudKey))$('accessDialog').showModal();
+  else if(conflict)$('conflicts').showModal();
+  else sync();
+};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync()});
+window.addEventListener('pageshow',sync);
 window.addEventListener('online',sync);
 window.addEventListener('focus',sync);
-setInterval(sync,60000);
+setInterval(()=>{if(!document.hidden)sync()},20000);
 sync();
 
