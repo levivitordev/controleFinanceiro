@@ -6,9 +6,9 @@ const key = 'saldo-pessoal-v1';
 const now = new Date();
 $('month').value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
 let editing = null;
-const kinds = {income:'Receita',expense:'Despesa',reserve:'Reserva',salary:'Renda mensal'};
+const kinds = {income:'Receita',expense:'Despesa',reserve:'Reserva',salary:'Renda mensal',bill:'Conta recorrente',limit:'Limite'};
 function valid(rows){
-  return Array.isArray(rows) && new Set(rows.map(r=>r?.id)).size===rows.length && rows.every(r=>r && typeof r.id==='string' && typeof r.description==='string' && r.description.trim() && Object.hasOwn(kinds,r.kind) && /^\d{4}-(0[1-9]|1[0-2])$/.test(r.start) && Number.isSafeInteger(r.cents) && (r.cents>0 || (r.cents===0 && r.kind==='salary')) && r.cents<=99999999900 && Number.isInteger(r.count) && r.count>=1 && r.count<=120 && (r.kind==='expense'||r.count===1));
+  return Array.isArray(rows) && new Set(rows.map(r=>r?.id)).size===rows.length && rows.every(r=>r && typeof r.id==='string' && typeof r.description==='string' && r.description.trim() && Object.hasOwn(kinds,r.kind) && (!r.category||typeof r.category==='string') && (r.kind!=='bill'||(Number.isInteger(r.day)&&r.day>=1&&r.day<=31&&Object.values(r.months||{}).every(v=>v&&Number.isSafeInteger(v.cents)&&v.cents>=0&&typeof v.paid==='boolean'))) && /^\d{4}-(0[1-9]|1[0-2])$/.test(r.start) && Number.isSafeInteger(r.cents) && (r.cents>0 || (r.cents===0 && r.kind==='salary')) && r.cents<=99999999900 && Number.isInteger(r.count) && r.count>=1 && r.count<=120 && (r.kind==='expense'||r.count===1));
 }
 function read(){
   const rows=JSON.parse(localStorage.getItem(key)||'[]');
@@ -19,6 +19,7 @@ function persist(rows){
   if(!valid(rows))throw Error('Lançamento inválido');
   localStorage.setItem(key,JSON.stringify(rows));
   render();
+  if(typeof sync==='function')sync();
 }
 function serial(month){const [year,m]=month.split('-').map(Number);return year*12+m-1}
 function installment(r,i){return Math.floor(r.cents/r.count)+(i<r.cents%r.count?1:0)}
@@ -26,7 +27,7 @@ function node(tag,value){const el=document.createElement(tag);el.textContent=val
 function line(parent,r,i,upcoming){
   const item=node('article',''), label=node('div',r.description);
   const date=serial(r.start)+i;
-  label.append(node('small',kinds[r.kind]+(r.count>1?' · Parcela '+(i+1)+' de '+r.count:'')+' · '+String(date%12+1).padStart(2,'0')+'/'+Math.floor(date/12)));
+  label.append(node('small',kinds[r.kind]+(r.kind==='expense'?' · '+(r.category||'Outros'):'')+(r.count>1?' · Parcela '+(i+1)+' de '+r.count:'')+' · '+String(date%12+1).padStart(2,'0')+'/'+Math.floor(date/12)));
   item.append(label,node('b',money(installment(r,i))));
   if(!upcoming){
     const controls=node('div',''), edit=node('button','Editar'), del=node('button','Excluir');
@@ -38,17 +39,17 @@ function line(parent,r,i,upcoming){
 }
 function render(){
   if(!$('month').value)return;
-  const selected=serial($('month').value), totals={income:0,expense:0,reserve:0}, future=[];
+  const selected=serial($('month').value), future=[];
   $('entries').replaceChildren();$('future').replaceChildren();
   const records=read();
-  const salary=records.filter(r=>r.kind==='salary' && r.start<=$('month').value).sort((a,b)=>b.start.localeCompare(a.start))[0];
-  totals.income=salary?.cents??0;
-  $('salaryValue').textContent=money(totals.income);
+  const plan=monthPlan(records,$('month').value), {salary,totals}=plan;
+  renderPlan(plan,records);
+  $('salaryValue').textContent=money(salary?.cents??0);
   $('salaryButton').textContent=salary?'Ajustar renda mensal':'Definir renda mensal';
   for(const r of records){
-    if(r.kind==='salary') continue;
+    if(['salary','bill','limit'].includes(r.kind))continue;
     const i=selected-serial(r.start);
-    if(i>=0&&i<r.count){totals[r.kind]+=installment(r,i);line($('entries'),r,i,false)}
+    if(i>=0&&i<r.count){line($('entries'),r,i,false)}
     if(r.count>1)for(let j=Math.max(0,i+1);j<r.count;j++)future.push([r,j]);
   }
   future.sort(([a,i],[b,j])=>serial(a.start)+i-serial(b.start)-j).forEach(([r,i])=>line($('future'),r,i,true));
@@ -65,16 +66,21 @@ function render(){
   $('balance').textContent=money(Math.max(0,balance));
   $('income').textContent=money(totals.income);$('spent').textContent=money(totals.expense);$('saved').textContent=money(totals.reserve);
 }
-function toggleCount(){fields.count.disabled=fields.kind.value!=='expense';if(fields.count.disabled)fields.count.value=1}
+function toggleCount(){$('simulation').hidden=$('categoryLabel').hidden=fields.kind.value!=='expense';fields.count.disabled=fields.kind.value!=='expense';if(fields.count.disabled)fields.count.value=1}
 function openForm(r){
   editing=r?.id??null;$('form').reset();$('title').textContent=r?'Editar lançamento':'Novo lançamento';
   fields.start.value=r?.start??$('month').value;
   if(r){fields.description.value=r.description;fields.kind.value=r.kind;fields.amount.value=(r.cents/100).toFixed(2);fields.count.value=r.count}
+  fields.category.value=r?.category||'';$('simulation').open=false;
   toggleCount();$('editor').showModal();
 }
 $('form').onsubmit=e=>{
   e.preventDefault();
   const record={id:editing??crypto.randomUUID(),description:fields.description.value.trim(),kind:fields.kind.value,start:fields.start.value,cents:Math.round(Number(fields.amount.value)*100),count:Number(fields.count.value)};
+  if(record.kind==='expense'){
+    const typed=fields.category.value.trim()||'Outros';
+    record.category=Array.from($('categoryOptions').options,o=>o.value).find(c=>c.toLowerCase()===typed.toLowerCase())||typed;
+  }
   try{const rows=read();persist(editing?rows.map(r=>r.id===editing?record:r):[...rows,record]);$('editor').close()}catch{alert('Não foi possível salvar. Confira a descrição e o armazenamento do navegador.')}
 };
 $('salaryButton').onclick=()=>{
@@ -98,6 +104,7 @@ $('restore').onclick=()=>$('file').click();
 $('file').onchange=async e=>{
   try{const rows=JSON.parse(await e.target.files[0].text());if(!valid(rows))throw Error();if(confirm('Substituir os lançamentos atuais por '+rows.length+' registros da cópia?'))persist(rows)}catch{alert('Não foi possível restaurar essa cópia.')}finally{e.target.value=''}
 };
+bindPlanning();
 window.addEventListener('storage',render);
 try{render()}catch{alert('Armazenamento indisponível ou dados inválidos. Verifique o navegador ou restaure uma cópia.')}
 
@@ -106,7 +113,7 @@ function updateThemeButton(){
   const choice=document.documentElement.dataset.theme;
   const dark=choice ? choice==='dark' : preference.matches;
   $('theme').setAttribute('aria-pressed',String(dark));
-  $('theme').textContent=dark?'☾  Modo escuro':'☀  Modo claro';
+  $('themeLabel').textContent=dark?'Modo escuro':'Modo claro';
 }
 $('theme').onclick=()=>{
   const theme=$('theme').getAttribute('aria-pressed')==='true'?'light':'dark';
