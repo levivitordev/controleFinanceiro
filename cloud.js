@@ -24,7 +24,7 @@ async function sync(){
     const local=read(), previous=localStorage.getItem(checkpoint);
     const equal=JSON.stringify(local)===JSON.stringify(remote.rows);
     const localChanged=previous===null?local.length>0:JSON.stringify(local)!==previous;
-    const remoteChanged=previous===null?remote.revision!==null:JSON.stringify(remote.rows)!==previous;
+    const remoteChanged=previous===null?remote.rows.length>0:JSON.stringify(remote.rows)!==previous;
     if(!equal && localChanged && remoteChanged){
       conflict=remote;
       $('resolve').hidden=false;
@@ -66,3 +66,4 @@ window.addEventListener('online',sync);
 window.addEventListener('focus',sync);
 setInterval(sync,60000);
 sync();
+
